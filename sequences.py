@@ -230,6 +230,14 @@ class RelativeNotes(BaseNoteSequence):
         self.cursor = self.noteCatalogue[nodeName]
 
         return self
+    def previous(self) -> RelativeNotes:
+        """Moves cursor to exactly one node behind. Doesnt do anything if node is the `head`.
+        - Can be chained.
+        """
+        if self.cursor == self.head: return self
+
+        self.cursor = self.previous
+        return self
     def jump_to_end(self) -> RelativeNotes:
         """Moves cursor to the end of the timeline list.
         - Can be chained.

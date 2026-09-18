@@ -69,6 +69,7 @@ class NoteEvent:
                 - `-1` for Relative Events, will get resolved when the sequence is compiled.
             duration: Duration of the note.
         """
+        ...
     @overload
     @classmethod
     def from_info(cls, name: str, velocity: int = 64, octave: int|None = None, beats: float|None = None, bpm: int|None = None, *, timestamp: int = -1) -> NoteEvent:
@@ -81,8 +82,8 @@ class NoteEvent:
                 - `-1` for Relative Events, will get resolved when the sequence is compiled.
             beats: The number of beats taken up by the note.
             bpm: The BPM the event is played at.
-            
         """
+        ...
     @classmethod
     def from_info(cls, name: str, velocity: int = 64, octave: int|None = None, beatsOrDuration: float|int|None = None, bpm: int|None = None, *, timestamp: int = -1) -> NoteEvent:
         return cls(
@@ -107,6 +108,49 @@ class NoteEvent:
         if defBeats <= 0:
             raise ValueError("Provided beats cannot be lesser than or equal to 0.")
         NoteEvent.DEFAULT_BEATS = defBeats
+
+@overload
+def note(note: Literal["C", "C#", "Db", "D", "D#", "Eb", "E", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B"], 
+         duration: float|None = None, 
+         octave: int|None = None, 
+         velocity: int|None = None, 
+         *, timestamp: int = -1) -> NoteEvent:
+    """Creates a `NoteEvent` from provided information.
+    Args:
+        note: The name of the note.
+        velocity: The loudness of the note.
+        octave: The octave of the note.
+        timestamp: Timestamp of the note. Defaults to `-1`. Must be specified in the argument with the name.
+            - `-1` for Relative Events, will get resolved when the sequence is compiled.
+        duration: Duration of the note.
+    """
+    ...
+@overload
+def note(note: Literal["C", "C#", "Db", "D", "D#", "Eb", "E", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B"], 
+         beats: float|None = None, 
+         bpm: int|None = None, 
+         octave: int|None = None, 
+         velocity: int|None = None, 
+         *, timestamp: int = -1) -> NoteEvent:
+    """Creates a `NoteEvent` from provided information.
+    Args:
+        note: The name of the note.
+        velocity: The loudness of the note.
+        octave: The octave of the note.
+        timestamp: Timestamp of the note. Defaults to `-1`. Must be specified in the argument with the name.
+            - `-1` for Relative Events, will get resolved when the sequence is compiled.
+        beats: The number of beats taken up by the note.
+        bpm: The BPM the event is played at.
+    """
+    ...
+
+def note(note: Literal["C", "C#", "Db", "D", "D#", "Eb", "E", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B"], 
+         beats: float|None = None, 
+         bpm: int|None = None, 
+         octave: int|None = None, 
+         velocity: int = 64, 
+         *, timestamp: int = -1) -> NoteEvent:
+    return NoteEvent.from_info(note, velocity, octave, beats, bpm, timestamp=timestamp)
 
 @dataclass
 class MidoEvent:

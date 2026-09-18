@@ -32,7 +32,7 @@ class Note:
         if octave is None: octave = self.DEFAULT_OCTAVE
         Note.assertNote(name)
         self.name = name
-        self.number = 12 * octave + Note.noteDictionary[name[0]]
+        self.number = int(12 * octave + Note.noteDictionary[name[0]])
         if len(name) == 2:
             self.number += Note.sharpFlat[name[1]]
         self.octave = octave

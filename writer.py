@@ -47,7 +47,7 @@ class MIDIWriter:
                 track.append(Message(event.event_type,
                                      note = note.number,
                                      velocity = note.velocity,
-                                     time = round((deltaTime * bpm * self.TICKS_PER_BEAT)/60000)))
+                                     time = int(round((deltaTime * bpm * self.TICKS_PER_BEAT)/60000))))
                 time += deltaTime
 
         self.midFile.save(self.filename + ".mid")
