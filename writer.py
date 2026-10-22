@@ -1,4 +1,24 @@
+# =============================================================================
+#  writer.py  --  MIDI file writer
+#  Version: 1.1.0
+#
+#  Changelog
+#  ---------
+#  1.1.0  (2026-10-23)
+#    - compile() now reads tick timestamps (MidoEvent.timestamp_ticks) and
+#      writes them directly. Tempo is applied in exactly one place: the
+#      set_tempo message. No ms -> ticks conversion, so no rounding drift.
+#    - Event ticks are rescaled if this writer's ticks_per_beat differs from
+#      events.TICKS_PER_BEAT.
+#    - The original ms-based compile is kept unchanged as compile_legacy_ms(),
+#      for comparison or rollback. Call one of the two per writer, not both.
+#
+#  1.0.0
+#    - Original version (ms -> ticks at write time).
+# =============================================================================
+
 from mido import MidiFile, MidiTrack, Message, MetaMessage, bpm2tempo
+import events as _events
 from events import MidoEvent
 from sequences import BaseNoteSequence
 
@@ -33,6 +53,34 @@ class MIDIWriter:
         self.tracks[self.trackNo] = MidiTrack()
         self.midFile.tracks.append(self.tracks[self.trackNo])
     def compile(self):
+        """Writes the file using the tick timeline.
+        - Every event's position comes from `timestamp_ticks`; the BPM only
+          sets the tempo message, so changing it never moves any note.
+        """
+        if not self.tracks: return
+        self.tracks[0].insert(0, MetaMessage('set_tempo', tempo=bpm2tempo(self.BPM), time=0))
+        scale = self.TICKS_PER_BEAT / _events.TICKS_PER_BEAT
+        for i in range(len(self.seq)):
+            seq = self.seq[i]
+            track = self.tracks[i]
+            previous = 0 #absolute tick of the previous message
+            midoEvents: list[MidoEvent] = seq.resolve(True)
+            for event in midoEvents:
+                if event.timestamp_ticks < 0:
+                    raise ValueError("Event has no tick timestamp; was the sequence resolved?")
+                absolute = int(round(event.timestamp_ticks * scale))
+                note = event.note
+                track.append(Message(event.event_type,
+                                     note = note.number,
+                                     velocity = note.velocity,
+                                     time = absolute - previous))
+                previous = absolute
+
+        self.midFile.save(self.filename + ".mid")
+
+    def compile_legacy_ms(self):
+        """Version 1.0.0 compile, unchanged: converts ms timestamps into ticks
+        at the writer's BPM. Kept for comparison and rollback."""
         if not self.tracks: return
         self.tracks[0].insert(0, MetaMessage('set_tempo', tempo=bpm2tempo(self.BPM), time=0))
         for i in range(len(self.seq)):
@@ -40,6 +88,7 @@ class MIDIWriter:
             track = self.tracks[i]
             time = 0 #time in ms
             midoEvents: list[MidoEvent] = seq.resolve(True)
+            midoEvents.sort(key= lambda x: x.timestamp) # 1.0.0 ordering (resolve now orders by tick)
             bpm = self.BPM
             for event in midoEvents:
                 deltaTime = event.timestamp - time

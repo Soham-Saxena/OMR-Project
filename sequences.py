@@ -1,8 +1,34 @@
+# =============================================================================
+#  sequences.py  --  relative and absolute note sequences
+#  Version: 1.1.0
+#
+#  Changelog
+#  ---------
+#  1.1.0  (2026-10-23)
+#    - Every node now carries a tick position (`tick`) and the longest tick
+#      duration of its events (`maxTicks`), next to the existing ms values
+#      (`timestamp`, `maxDuration`), which are still maintained as before.
+#    - Nodes are matched on ticks. Two paths that reach the same musical
+#      position now land on the same node even when their ms sums differ by
+#      rounding (e.g. three triplet eighths at 120 BPM sum to 498 ms, a
+#      quarter to 500 ms -- previously two nodes, now one, at tick 480).
+#    - advance(): new keyword `duration_ticks`; `duration` (ms) still works.
+#    - advance_to_end(): new keyword `extra_ticks`; `extra` (ms) still works.
+#    - add()/set()/remove() keep `maxTicks` in step with `maxDuration`.
+#    - resolve() fills `timestamp_ticks` and orders MidoEvents by tick, with
+#      note_off before note_on at the same tick.
+#    - AbsoluteNotes: accepts events timed in ticks; remove_event() also zeroes
+#      `duration_ticks`; resolve() orders by tick.
+#
+#  1.0.0
+#    - Original ms-based version.
+# =============================================================================
+
 from __future__ import annotations
 
 import copy
 from note import Note
-from events import NoteEvent, MidoEvent
+from events import NoteEvent, MidoEvent, ms_to_ticks, ticks_to_ms
 from abc import ABC, abstractmethod
 from typing import overload
 
@@ -30,6 +56,8 @@ class RelativeNotes(BaseNoteSequence):
             self.data: dict[int, NoteEvent] = {} 
             self.maxDuration = 0
             self.timestamp = -1
+            self.maxTicks = 0
+            self.tick = -1
             self.next: RelativeNotes._Node|None = None
             self.prev: RelativeNotes._Node|None = None
     def __init__(self):
@@ -59,25 +87,26 @@ class RelativeNotes(BaseNoteSequence):
                 self.tail = toInsert
         else:
             raise ValueError("Reference cannot be None for a non-empty sequence.")
-    def _update_cursor(self, timestamp: int) -> bool:
-        """Helper function that updates cursor to the nearest node with `node.timestamp` <= `timestamp`
+    def _update_cursor(self, tick: int) -> bool:
+        """Helper function that updates cursor to the nearest node with `node.tick` <= `tick`
+        - Matches on ticks (1.1.0); previously on ms timestamps.
         Args:
-            timestamp: The timestamp to update cursor with respect to.
+            tick: The tick position to update cursor with respect to.
         Returns:
             Whether existing node found or not.
         """
-        if self.cursor.timestamp == timestamp:
+        if self.cursor.tick == tick:
             return True
         nextNode = self.cursor.next
         if nextNode:
-            if nextNode.timestamp == timestamp:
+            if nextNode.tick == tick:
                 self.cursor = nextNode
                 return True
             else:
-                while(nextNode and nextNode.timestamp < timestamp):
+                while(nextNode and nextNode.tick < tick):
                     self.cursor = nextNode
                     nextNode = nextNode.next
-                if nextNode and nextNode.timestamp == timestamp:
+                if nextNode and nextNode.tick == tick:
                     self.cursor = nextNode
                     return True
         return False
@@ -91,6 +120,7 @@ class RelativeNotes(BaseNoteSequence):
             raise RuntimeError("Cannot use start once sequence is already initialized.")
         newNode = self._Node()
         newNode.timestamp = 0
+        newNode.tick = 0
         self._insert(self.tail, newNode)
         self.cursor = newNode
         if nodeName is None:
@@ -98,19 +128,31 @@ class RelativeNotes(BaseNoteSequence):
             self.nodeCount += 1
         self.noteCatalogue[nodeName] = newNode
         return self
-    def advance(self, duration: int, nodeName: str|None = None) -> RelativeNotes:
+    def advance(self, duration: int|None = None, nodeName: str|None = None, *, duration_ticks: int|None = None) -> RelativeNotes:
         """Advances the cursor by given duration, creates a new node if no pre-existing node.
         - Can be chained.
         Args:
             duration: The duration to advance by, in **ms**.
             nodeName: The name to register node under, discarded if node already exists. If not provided, defaults to `node {count}`.
+            duration_ticks: The duration to advance by, in **ticks**. Use instead of `duration`.
         """
         if self.cursor is None:
             raise RuntimeError("Cannot advance an empty sequence.")
-        if duration < 0:
-            raise ValueError("Advance duration cannot be negative.")
+        if duration is None and duration_ticks is None:
+            raise TypeError("Provide either duration (ms) or duration_ticks.")
+        if duration_ticks is None:
+            if duration < 0:
+                raise ValueError("Advance duration cannot be negative.")
+            stepTicks = ms_to_ticks(duration)
+        else:
+            if duration_ticks < 0:
+                raise ValueError("Advance duration cannot be negative.")
+            stepTicks = int(duration_ticks)
+            if duration is None:
+                duration = ticks_to_ms(stepTicks)
         nextTimeStamp = self.cursor.timestamp + duration
-        found = self._update_cursor(nextTimeStamp)
+        nextTick = self.cursor.tick + stepTicks
+        found = self._update_cursor(nextTick)
         if not found:
             if nodeName is None:
                 nodeName = f"node {self.nodeCount}"
@@ -119,6 +161,7 @@ class RelativeNotes(BaseNoteSequence):
                 raise RuntimeError("Name cannot already exist in catalogue, please choose something else.")
             newNode = self._Node()
             newNode.timestamp = nextTimeStamp
+            newNode.tick = nextTick
             self._insert(self.cursor, newNode)
             self.cursor = newNode
             
@@ -144,23 +187,33 @@ class RelativeNotes(BaseNoteSequence):
             octave: Octave of the specified note, defaults to `DEFAULT_OCTAVE`.
         """
         ...   
-    def advance_to_end(self, extra: int = 0, nodeName: str|None = None, noteName: str|None = None, octave: int|None = None) -> RelativeNotes:
+    def advance_to_end(self, extra: int = 0, nodeName: str|None = None, noteName: str|None = None, octave: int|None = None, *, extra_ticks: int|None = None) -> RelativeNotes:
+        """See overloads. `extra_ticks` (keyword) gives the extra gap in ticks instead of ms."""
         if self.cursor is None:
             raise RuntimeError("Cannot advance to the end of an empty sequence.")
-        if extra < 0:
+        if extra < 0 or (extra_ticks is not None and extra_ticks < 0):
             raise ValueError("Extra duration cannot be negative.")
+        if extra_ticks is None:
+            extraTicks = ms_to_ticks(extra)
+        else:
+            extraTicks = int(extra_ticks)
+            if extra == 0:
+                extra = ticks_to_ms(extraTicks)
         if octave is None: octave = self.DEFAULT_OCTAVE
         if noteName is None:
             duration = self.cursor.maxDuration
+            durationTicks = self.cursor.maxTicks
         else:
             noteNum = Note.getNum(noteName, octave)
-            duration = (
-                self.cursor.data[noteNum].duration
-                if noteNum in self.cursor.data
-                else self.cursor.maxDuration
-            )
+            if noteNum in self.cursor.data:
+                duration = self.cursor.data[noteNum].duration
+                durationTicks = self.cursor.data[noteNum].duration_ticks
+            else:
+                duration = self.cursor.maxDuration
+                durationTicks = self.cursor.maxTicks
         nextTimestamp = self.cursor.timestamp + duration + extra
-        found = self._update_cursor(nextTimestamp)
+        nextTick = self.cursor.tick + durationTicks + extraTicks
+        found = self._update_cursor(nextTick)
         if not found:
             if nodeName is None:
                 nodeName = f"node {self.nodeCount}"
@@ -169,6 +222,7 @@ class RelativeNotes(BaseNoteSequence):
                 raise RuntimeError("Name cannot already exist in catalogue, please choose something else.")
             newNode = self._Node()
             newNode.timestamp = nextTimestamp
+            newNode.tick = nextTick
             self._insert(self.cursor, newNode)
             self.cursor = newNode
             
@@ -186,12 +240,14 @@ class RelativeNotes(BaseNoteSequence):
         noteNum = event.note.number
         currentNode = self.cursor
         if noteNum in currentNode.data:
-            existingDuration = currentNode.data[noteNum].duration
-            currentNode.data[noteNum].duration = max(existingDuration, event.duration)
+            existing = currentNode.data[noteNum]
+            existing.duration = max(existing.duration, event.duration)
+            existing.duration_ticks = max(existing.duration_ticks, event.duration_ticks)
             currentNode.maxDuration = max(currentNode.maxDuration, event.duration)
         else:
             currentNode.data[noteNum] = copy.copy(event)
             currentNode.maxDuration = max(currentNode.maxDuration, event.duration)
+        currentNode.maxTicks = max(currentNode.maxTicks, event.duration_ticks)
         return self
     def set(self, event: NoteEvent) -> RelativeNotes:
         """Sets an event at the node the cursor is currently at.
@@ -218,6 +274,10 @@ class RelativeNotes(BaseNoteSequence):
             )
         else:
             currentNode.maxDuration = max(currentNode.maxDuration, event.duration)
+        currentNode.maxTicks = max(
+            (e.duration_ticks for e in currentNode.data.values()),
+            default=0
+        )
         return self
     def jump_to(self, nodeName: str) -> RelativeNotes:
         """Moves cursor to provided node name.
@@ -265,6 +325,10 @@ class RelativeNotes(BaseNoteSequence):
                 (e.duration for e in self.cursor.data.values()),
                 default=0
             )
+        self.cursor.maxTicks = max(
+            (e.duration_ticks for e in self.cursor.data.values()),
+            default=0
+        )
         
         return self
     def default_octave(self, defOctave: int) -> RelativeNotes:
@@ -291,15 +355,17 @@ class RelativeNotes(BaseNoteSequence):
             while itr:
                 for noteEvent in itr.data.values():
                     noteEvent.timestamp = itr.timestamp
+                    noteEvent.timestamp_ticks = itr.tick
                     eventList.extend(MidoEvent.from_note_event(noteEvent))
                 itr = itr.next
-            eventList.sort(key= lambda x: x.timestamp)
+            eventList.sort(key= lambda x: x.sort_key())
         else:
             eventList: list[NoteEvent] = []
             itr = self.head
             while itr:
                 for noteEvent in itr.data.values():
                     noteEvent.timestamp = itr.timestamp
+                    noteEvent.timestamp_ticks = itr.tick
                     eventList.append(copy.copy(noteEvent))
                 itr = itr.next
 
@@ -324,7 +390,7 @@ class AbsoluteNotes(BaseNoteSequence):
             event: The event to add to the sequence.
             eventName: The name to register event under. If not provided, defaults to `event {count}`.
         """
-        if event.timestamp < 0:
+        if event.timestamp < 0 and event.timestamp_ticks < 0:
             raise ValueError("Absolute NoteEvent must have a valid timestamp.")
         if eventName is None:
             eventName = f"event {self.eventCount}"
@@ -345,6 +411,7 @@ class AbsoluteNotes(BaseNoteSequence):
         if eventName not in self.noteCatalogue:
             raise ValueError("Provided event does not exist in catalogue.")
         self.noteCatalogue[eventName].duration = 0
+        self.noteCatalogue[eventName].duration_ticks = 0
 
         return self
 
@@ -357,19 +424,19 @@ class AbsoluteNotes(BaseNoteSequence):
         """
         activeEvents = [
             event for event in self.events
-            if event.duration > 0
+            if event.duration > 0 and event.duration_ticks > 0
         ]
 
         if Mido_events:
             eventList: list[MidoEvent] = []
             for event in activeEvents:
                 eventList.extend(MidoEvent.from_note_event(event))
-            eventList.sort(key= lambda x: x.timestamp)
+            eventList.sort(key= lambda x: x.sort_key())
         else:
             eventList: list[NoteEvent] = []
             for event in activeEvents:
                 eventList.append(copy.copy(event))
-            eventList.sort(key= lambda x: x.timestamp)
+            eventList.sort(key= lambda x: x.timestamp_ticks)
 
         return eventList
 
