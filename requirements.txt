@@ -1,0 +1,7 @@
+numpy
+opencv-python-headless
+scipy
+scikit-learn
+matplotlib
+mido
+pillow   # only for make_templates.py and eval/synth_score.py

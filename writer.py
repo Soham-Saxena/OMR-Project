@@ -1,9 +1,19 @@
 # =============================================================================
 #  writer.py  --  MIDI file writer
-#  Version: 1.1.0
+#  Version: 1.2.0
 #
 #  Changelog
 #  ---------
+#  1.2.0  (2026-10-25)
+#    - addSequence() takes optional program, channel and name, so each part
+#      can be its own General MIDI instrument (env_config.Part). compile()
+#      writes track_name and program_change at tick 0 and sends the part's
+#      notes on its channel.
+#    - Optional time_signature attribute, written as a meta message next to
+#      the tempo.
+#    - Defaults reproduce 1.1.0 output byte for byte (channel 0, no program
+#      change, no time signature).
+#
 #  1.1.0  (2026-10-23)
 #    - compile() now reads tick timestamps (MidoEvent.timestamp_ticks) and
 #      writes them directly. Tempo is applied in exactly one place: the
@@ -42,12 +52,23 @@ class MIDIWriter:
         self.midFile.tracks.append(self.tracks[0])
         self.trackNo: int = 0
         self.seq: dict[int, BaseNoteSequence] = {}
+        self.trackInfo: dict[int, dict] = {}
+        self.time_signature: tuple[int, int] | None = None
 
-    def addSequence(self, seq : BaseNoteSequence):
+    def addSequence(self, seq : BaseNoteSequence, program: int|None = None, channel: int = 0,
+                    name: str|None = None):
         """Adds a sequence to a the current track and initializes the next track.
         Args:
             seq: The BaseNoteSequence to append.
+            program: General MIDI program (0-127) for this track, or None to leave it unset.
+            channel: MIDI channel (0-15) for this track's notes.
+            name: Optional track name.
         """
+        if not 0 <= channel <= 15:
+            raise ValueError("channel must be within [0, 15]")
+        if program is not None and not 0 <= program <= 127:
+            raise ValueError("program must be within [0, 127]")
+        self.trackInfo[self.trackNo] = {"program": program, "channel": channel, "name": name}
         self.seq[self.trackNo] = seq
         self.trackNo += 1
         self.tracks[self.trackNo] = MidiTrack()
@@ -59,10 +80,19 @@ class MIDIWriter:
         """
         if not self.tracks: return
         self.tracks[0].insert(0, MetaMessage('set_tempo', tempo=bpm2tempo(self.BPM), time=0))
+        if self.time_signature is not None:
+            num, den = self.time_signature
+            self.tracks[0].insert(1, MetaMessage('time_signature', numerator=num, denominator=den, time=0))
         scale = self.TICKS_PER_BEAT / _events.TICKS_PER_BEAT
         for i in range(len(self.seq)):
             seq = self.seq[i]
             track = self.tracks[i]
+            info = self.trackInfo.get(i, {"program": None, "channel": 0, "name": None})
+            channel = info["channel"]
+            if info["name"]:
+                track.append(MetaMessage('track_name', name=info["name"], time=0))
+            if info["program"] is not None:
+                track.append(Message('program_change', program=info["program"], channel=channel, time=0))
             previous = 0 #absolute tick of the previous message
             midoEvents: list[MidoEvent] = seq.resolve(True)
             for event in midoEvents:
@@ -73,6 +103,7 @@ class MIDIWriter:
                 track.append(Message(event.event_type,
                                      note = note.number,
                                      velocity = note.velocity,
+                                     channel = channel,
                                      time = absolute - previous))
                 previous = absolute
 

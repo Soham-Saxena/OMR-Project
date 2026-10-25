@@ -1,9 +1,23 @@
 # =============================================================================
 #  staff_detect.py  --  Stage 2: staff line detection and grouping
-#  Version: 3.2.0
+#  Version: 3.3.0
 #
 #  Changelog
 #  ---------
+#  3.3.0  (2026-10-23)
+#    - Deskew (Stage 1). estimate_skew() finds the page angle that makes the
+#      horizontal projection sharpest (maximum sum of squared row counts),
+#      coarse +-3 deg then fine; deskew_page() rotates gray and binary.
+#      detect_staves(..., deskew=True) does both first. On the real sample
+#      s03 (lines drifting ~19 px across the page) a whole staff was lost
+#      without it.
+#    - Result dict gains `angle` (degrees) and `gray` (the deskewed page).
+#      Everything in the result is in deskewed coordinates; plot_overlay now
+#      draws on result["gray"] so lines always align.
+#    - t/U sanity range widened to [0.03, 0.30]: printed staff paper scanned
+#      at high resolution has lines ~0.05 U thick, which tripped a false
+#      warning on 9 of 15 real pages.
+#
 #  3.2.0  (2026-10-23)
 #    - FIX: polarity. detect_staves always used THRESH_BINARY_INV, so on the
 #      CVC-MUSCIMA *_GT_BW images (white ink on black) it treated the
@@ -254,8 +268,8 @@ def estimate_staff_metrics(binary: np.ndarray) -> StaffMetrics:
     u = s + t
 
     ratio = t / u
-    if not 0.05 <= ratio <= 0.30:
-        warnings.append(f"t/U = {ratio:.3f} outside [0.05, 0.30]")
+    if not 0.03 <= ratio <= 0.30:
+        warnings.append(f"t/U = {ratio:.3f} outside [0.03, 0.30]")
     if u < 12:
         warnings.append(f"U = {u:.1f} px is below the reliable range (~15+)")
     if dom_b < 3:
@@ -612,7 +626,77 @@ def binarize(gray: np.ndarray) -> np.ndarray:
     return binary
 
 
-def detect_staves(gray: np.ndarray, u_override: float | None = None) -> dict:
+SKEW_RANGE_DEG  = 3.0     # search +-this many degrees
+SKEW_COARSE_DEG = 0.1
+SKEW_FINE_DEG   = 0.01
+SKEW_MIN_DEG    = 0.02    # don't bother rotating below this
+SKEW_MAX_INK    = 400_000 # subsample ink pixels above this, for speed
+
+
+def estimate_skew(binary: np.ndarray, seed: int = 0) -> float:
+    """Estimates page rotation, in degrees (positive = counter-clockwise).
+
+    Staff lines are long horizontal runs of ink. When the page is level they
+    pile into a few rows and the horizontal projection is sharply peaked;
+    when it is rotated they smear across neighbouring rows. So the angle that
+    maximises the sum of squared row counts is the one that levels the page.
+    For angles this small, rotation is well approximated by a shear: shift
+    each pixel's row by x * tan(angle).
+
+    Args:
+        binary: Binary page, ink = 255.
+        seed: Seed for subsampling ink pixels on very dense pages.
+    Returns:
+        The correction angle in degrees.
+    """
+    ys, xs = np.nonzero(binary)
+    if ys.size == 0:
+        return 0.0
+    if ys.size > SKEW_MAX_INK:
+        pick = np.random.default_rng(seed).choice(ys.size, SKEW_MAX_INK, replace=False)
+        ys, xs = ys[pick], xs[pick]
+
+    xs = xs.astype(float) - binary.shape[1] / 2.0
+    ys = ys.astype(float)
+    offset = abs(np.tan(np.radians(SKEW_RANGE_DEG))) * binary.shape[1] + 2
+
+    def sharpness(deg: float) -> float:
+        rows = np.round(ys - xs * np.tan(np.radians(deg)) + offset).astype(int)
+        counts = np.bincount(rows)
+        return float(np.dot(counts, counts))
+
+    coarse = np.arange(-SKEW_RANGE_DEG, SKEW_RANGE_DEG + 1e-9, SKEW_COARSE_DEG)
+    best = coarse[int(np.argmax([sharpness(a) for a in coarse]))]
+    fine = np.arange(best - SKEW_COARSE_DEG, best + SKEW_COARSE_DEG + 1e-9, SKEW_FINE_DEG)
+    return float(fine[int(np.argmax([sharpness(a) for a in fine]))])
+
+
+def deskew_page(gray: np.ndarray, binary: np.ndarray,
+                angle: float) -> tuple[np.ndarray, np.ndarray]:
+    """Rotates the page by `angle` degrees about its centre.
+    - Gray uses bilinear interpolation, binary uses nearest neighbour so it
+      stays binary. Exposed corners are filled with background.
+    Returns:
+        `(gray, binary)` deskewed.
+    """
+    if abs(angle) < SKEW_MIN_DEG:
+        return gray, binary
+
+    height, width = binary.shape
+    matrix = cv2.getRotationMatrix2D((width / 2.0, height / 2.0), angle, 1.0)
+
+    ink_is_dark = np.mean(gray[binary > 0]) < np.mean(gray[binary == 0])
+    paper = int(np.median(gray[binary == 0])) if np.any(binary == 0) else (255 if ink_is_dark else 0)
+
+    gray_out = cv2.warpAffine(gray, matrix, (width, height), flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_CONSTANT, borderValue=paper)
+    binary_out = cv2.warpAffine(binary, matrix, (width, height), flags=cv2.INTER_NEAREST,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    return gray_out, binary_out
+
+
+def detect_staves(gray: np.ndarray, u_override: float | None = None,
+                  deskew: bool = True) -> dict:
     """Runs the whole Stage 2 chain on one grayscale page.
 
     Order matters: U is measured first from run-lengths, and only then used
@@ -622,6 +706,8 @@ def detect_staves(gray: np.ndarray, u_override: float | None = None) -> dict:
     Args:
         gray: Grayscale page image.
         u_override: Staff line pitch to use instead of the run-length estimate.
+        deskew: Level the page first (recommended). All returned coordinates
+            are in the deskewed frame; use `result["gray"]` for display.
     Returns:
         Dict holding every intermediate, for diagnostics as well as output:
         `binary`, `metrics`, `projection`, `profile`, `strong_peaks`,
@@ -629,6 +715,8 @@ def detect_staves(gray: np.ndarray, u_override: float | None = None) -> dict:
         `clusters`, `staves`, `warnings`.
     """
     binary = binarize(gray)
+    angle = estimate_skew(binary) if deskew else 0.0
+    gray, binary = deskew_page(gray, binary, angle)
 
     metrics = estimate_staff_metrics(binary)
     interline = float(u_override or metrics.interline)
@@ -657,6 +745,8 @@ def detect_staves(gray: np.ndarray, u_override: float | None = None) -> dict:
 
     return {
         "binary": binary,
+        "gray": gray,
+        "angle": angle,
         "metrics": metrics,
         "projection": projection,
         "profile": profile,
@@ -753,6 +843,7 @@ def plot_overlay(gray: np.ndarray, result: dict, width_in: float = 16.0):
         result: The dict returned by `detect_staves`.
         width_in: Figure width in inches.
     """
+    gray = result.get("gray", gray)   # deskewed page, aligned with the staves
     staves = result["staves"]
     cmap = plt.colormaps["tab10"]
     height_px, width_px = gray.shape[:2]
@@ -789,6 +880,8 @@ def summarise(result: dict):
         print(f"U (peak-gap)     : {result['interline_peak_gap']:.2f} px  (cross-check)")
     for w in result["warnings"]:
         print(f"WARNING          : {w}")
+    if "angle" in result:
+        print(f"deskew angle     : {result['angle']:+.2f} deg")
     print(f"line peaks       : {result['strong_peaks'].size}")
     print(f"clusters         : {len(result['clusters'])}")
     print(f"staves           : {len(result['staves'])}")

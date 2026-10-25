@@ -1,0 +1,89 @@
+{
+  "u_ref": 40,
+  "templates": [
+    {
+      "name": "filled_0",
+      "cls": "notehead_filled",
+      "file": "filled_0.png",
+      "anchor_y": 25.0
+    },
+    {
+      "name": "filled_1",
+      "cls": "notehead_filled",
+      "file": "filled_1.png",
+      "anchor_y": 26.0
+    },
+    {
+      "name": "filled_2",
+      "cls": "notehead_filled",
+      "file": "filled_2.png",
+      "anchor_y": 24.5
+    },
+    {
+      "name": "hollow_0",
+      "cls": "notehead_hollow",
+      "file": "hollow_0.png",
+      "anchor_y": 25.0
+    },
+    {
+      "name": "hollow_1",
+      "cls": "notehead_hollow",
+      "file": "hollow_1.png",
+      "anchor_y": 26.0
+    },
+    {
+      "name": "whole_0",
+      "cls": "notehead_hollow",
+      "file": "whole_0.png",
+      "anchor_y": 24.5
+    },
+    {
+      "name": "whole_1",
+      "cls": "notehead_hollow",
+      "file": "whole_1.png",
+      "anchor_y": 25.5
+    },
+    {
+      "name": "rest_block",
+      "cls": "rest_block",
+      "file": "rest_block.png",
+      "anchor_y": 22.0
+    },
+    {
+      "name": "sharp",
+      "cls": "sharp",
+      "file": "sharp.png",
+      "anchor_y": 66.0
+    },
+    {
+      "name": "flat",
+      "cls": "flat",
+      "file": "flat.png",
+      "anchor_y": 84.0
+    },
+    {
+      "name": "natural",
+      "cls": "natural",
+      "file": "natural.png",
+      "anchor_y": 66.0
+    },
+    {
+      "name": "rest_quarter",
+      "cls": "rest_quarter",
+      "file": "rest_quarter.png",
+      "anchor_y": 70.0
+    },
+    {
+      "name": "rest_eighth",
+      "cls": "rest_eighth",
+      "file": "rest_eighth.png",
+      "anchor_y": 50.0
+    },
+    {
+      "name": "rest_sixteenth",
+      "cls": "rest_sixteenth",
+      "file": "rest_sixteenth.png",
+      "anchor_y": 68.0
+    }
+  ]
+}

@@ -1,9 +1,16 @@
 # =============================================================================
 #  staff_remove.py  --  Stage 3: staff line removal
-#  Version: 1.1.0
+#  Version: 1.2.0
 #
 #  Changelog
 #  ---------
+#  1.2.0  (2026-10-23)
+#    - align_ground_truth(): rotates a staff-free ground-truth page by the
+#      angle staff_detect used to level the page, so scores compare the same
+#      pixels. The script's --gt option now uses it. Without it, scores on any
+#      skewed page are meaningless (F1 fell from 0.975 to 0.86 on test pages
+#      purely from misalignment).
+#
 #  1.1.0  (2026-10-23)
 #    - plot_cleaned() takes an optional `before` image and then shows
 #      before (top) and after (bottom) in one figure, with linked axes:
@@ -29,7 +36,7 @@
 #      pages (F1 0.971 vs 0.975), so it stays off until real ground truth
 #      says otherwise.
 #
-#  Depends on staff_detect.py >= 3.2.0
+#  Depends on staff_detect.py >= 3.3.0 (deskew)
 # =============================================================================
 
 from __future__ import annotations
@@ -44,7 +51,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import median_filter, uniform_filter1d
 
-from staff_detect import Staff, binarize, detect_staves, vertical_runs
+from staff_detect import Staff, binarize, deskew_page, detect_staves, vertical_runs
 
 # --------------------------------------------------------------------------- #
 #  Tunables. Lengths are in units of U (staff line pitch) or t (staff line
@@ -308,6 +315,22 @@ def remove_from_detection(result: dict) -> StaffRemoval:
 # --------------------------------------------------------------------------- #
 #  Evaluation
 # --------------------------------------------------------------------------- #
+def align_ground_truth(gt_no_staff: np.ndarray, result: dict) -> np.ndarray:
+    """Puts a staff-free ground-truth page into the same frame as `result`.
+    - detect_staves levels the page before detecting; the ground truth must be
+      rotated by the same angle, the same way (nearest neighbour on the
+      binarised image), or every comparison is off by the rotation.
+    Args:
+        gt_no_staff: Ground-truth page without staff lines, any polarity.
+        result: The dict returned by `detect_staves`.
+    Returns:
+        Binary ground truth (ink = 255) aligned with `result["binary"]`.
+    """
+    gt_binary = binarize(gt_no_staff)
+    _, aligned = deskew_page(gt_no_staff, gt_binary, result.get("angle", 0.0))
+    return aligned
+
+
 def evaluate_removal(binary: np.ndarray, cleaned: np.ndarray,
                      gt_no_staff: np.ndarray) -> dict:
     """Pixel-level scores against a staff-free ground-truth image.
@@ -319,8 +342,8 @@ def evaluate_removal(binary: np.ndarray, cleaned: np.ndarray,
     Args:
         binary: Original binary page, ink = 255.
         cleaned: Output of removal, ink = 255.
-        gt_no_staff: Ground-truth page without staff lines (any polarity;
-            it is binarised the same way).
+        gt_no_staff: Ground-truth page without staff lines, in the SAME frame
+            as `binary` -- pass it through `align_ground_truth` first.
     Returns:
         Dict with `precision`, `recall`, `f1` for staff-pixel detection, plus
         `symbol_loss` (share of symbol ink wrongly erased) and `staff_left`
@@ -397,7 +420,7 @@ def plot_cleaned(removal: StaffRemoval, before: np.ndarray | None = None,
 
     height_px, width_px = after.shape[:2]
     panel_h = width_in * height_px / width_px
-    fig, axes = plt.subplots(ncols=2, sharex=True, sharey=True,
+    fig, axes = plt.subplots(nrows=2, sharex=True, sharey=True,
                              figsize=(width_in, 2 * panel_h + 0.6))
 
     for ax, image, title in ((axes[0], 255 - before, "Before"),
@@ -450,7 +473,7 @@ if __name__ == "__main__":
 
     path = args.image
     if path is None:
-        random.seed(40)
+        random.seed(35)
         files = glob("./Separate_Set/*.png")
         if not files:
             raise SystemExit("No images found in ./Separate_Set/")
@@ -463,7 +486,8 @@ if __name__ == "__main__":
 
     scores = None
     if args.gt:
-        scores = evaluate_removal(result["binary"], removal.cleaned, cv2.imread(args.gt, 0))
+        gt = align_ground_truth(cv2.imread(args.gt, 0), result)
+        scores = evaluate_removal(result["binary"], removal.cleaned, gt)
 
     summarise(result, removal, scores)
     plot_cleaned(removal, before=result["binary"])
