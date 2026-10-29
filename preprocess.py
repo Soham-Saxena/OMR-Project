@@ -1,9 +1,17 @@
 # =============================================================================
 #  preprocess.py  --  Stage 1: page preprocessing (grey scale, deskew)
-#  Version: 1.0.0
+#  Version: 1.1.0
 #
 #  Changelog
 #  ---------
+#  1.1.0  (2026-10-28)
+#    - clean_page(): screenshots often show more than the page (a grey
+#      side panel, the taskbar, a mouse cursor). The page is the largest
+#      bright region; everything outside it (not enclosed by it) is painted
+#      paper white, so the grey panel is not binarised as one huge block of ink.
+#      Pages that fill the image are left untouched.
+#    - to_gray(): colour images with an alpha channel are composed on white
+#      first (transparent PNG exports came out black).
 #  1.0.0  (2026-10-25)
 #    - to_gray(): any image (BGR, BGRA, grey) to 8-bit grey.
 #    - estimate_skew(): projection-profile method. Staff lines are long and
@@ -31,11 +39,50 @@ WORK_WIDTH = 1200      # the search runs on a copy scaled to this width
 
 
 def to_gray(image: np.ndarray) -> np.ndarray:
+    if image.dtype != np.uint8:                         # 16-bit PNG/TIFF
+        image = cv2.convertScaleAbs(image, alpha=255.0 / max(float(image.max()), 1.0))
     if image.ndim == 2:
         return image
     if image.shape[2] == 4:
-        return cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
+        # transparent background (MuseScore PNG export): compose on white
+        alpha = image[:, :, 3:4].astype(np.float32) / 255.0
+        rgb = image[:, :, :3].astype(np.float32) * alpha + 255.0 * (1.0 - alpha)
+        return cv2.cvtColor(rgb.astype(np.uint8), cv2.COLOR_BGR2GRAY)
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+
+PAPER_MARGIN = 30          # grey levels below the paper level that still count as paper
+PAGE_MIN_SHARE = 0.15      # the page must be at least this share of the image ...
+PAGE_MAX_SHARE = 0.92      # ... and below this share for anything to be cleaned
+
+
+def clean_page(gray: np.ndarray) -> tuple[np.ndarray, tuple | None]:
+    """Paints everything outside the page white. Returns the image and the
+    page box (x, y, w, h), or None when the page already fills the image."""
+    h, w = gray.shape
+    paper_level = float(np.percentile(gray, 95))
+    if paper_level < 128:                                # white ink on a dark page: leave it
+        return gray, None
+    paper = (gray >= paper_level - PAPER_MARGIN).astype(np.uint8)
+    # close the gaps that the music itself cuts into the paper
+    k = max(3, int(round(min(h, w) / 60)))
+    paper = cv2.morphologyEx(paper, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(paper, connectivity=4)
+    if n <= 1:
+        return gray, None
+    best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    page = (labels == best).astype(np.uint8)
+    # the music inside the page is enclosed by paper: fill those holes
+    border = np.pad(1 - page, 1, constant_values=1)
+    cv2.floodFill(border, np.zeros((h + 4, w + 4), np.uint8), (0, 0), 2, flags=4)
+    reached = border[1:-1, 1:-1] == 2                    # non-page pixels connected to the image border
+    share = 1.0 - reached.mean()
+    if not PAGE_MIN_SHARE <= share <= PAGE_MAX_SHARE:
+        return gray, None
+    out = gray.copy()
+    out[reached] = 255
+    ys, xs = np.nonzero(~reached)
+    return out, (int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1))
 
 
 def _ink(gray: np.ndarray) -> np.ndarray:

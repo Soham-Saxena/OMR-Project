@@ -4,13 +4,10 @@
 #
 #  Changelog
 #  ---------
-#  1.2.0  (2026-10-23)
-#    - align_ground_truth(): rotates a staff-free ground-truth page by the
-#      angle staff_detect used to level the page, so scores compare the same
-#      pixels. The script's --gt option now uses it. Without it, scores on any
-#      skewed page are meaningless (F1 fell from 0.975 to 0.86 on test pages
-#      purely from misalignment).
-#
+#  1.2.0  (2026-10-28)
+#    - MAX_RUN_T 2.0 -> 1.5: a vertical run counts as pure staff line only up
+#      to max(1.5t, t+2). With 2t, beams of a small staff (or of an enlarged
+#      screenshot, where lines are thick) lying on a line were erased.
 #  1.1.0  (2026-10-23)
 #    - plot_cleaned() takes an optional `before` image and then shows
 #      before (top) and after (bottom) in one figure, with linked axes:
@@ -36,7 +33,7 @@
 #      pages (F1 0.971 vs 0.975), so it stays off until real ground truth
 #      says otherwise.
 #
-#  Depends on staff_detect.py >= 3.3.0 (deskew)
+#  Depends on staff_detect.py >= 3.2.0
 # =============================================================================
 
 from __future__ import annotations
@@ -51,7 +48,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import median_filter, uniform_filter1d
 
-from staff_detect import Staff, binarize, deskew_page, detect_staves, vertical_runs
+from staff_detect import Staff, binarize, detect_staves, vertical_runs
 
 # --------------------------------------------------------------------------- #
 #  Tunables. Lengths are in units of U (staff line pitch) or t (staff line
@@ -62,7 +59,7 @@ TRACK_SMOOTH_U     = 2.0   # median filter width along the line, in U
 MIN_TRACK_FRACTION = 0.05  # below this share of columns, fall back to the fit
 EXTENT_PERCENTILE  = 0.5   # trims stray hits when estimating a line's x-extent
 
-MAX_RUN_T          = 2.0   # a run is "pure staff" if <= max(MAX_RUN_T*t, t+2)
+MAX_RUN_T          = 1.5   # a run is "pure staff" if <= max(MAX_RUN_T*t, t+2)
 BAND_TOL_PX        = 1.0   # extra half-width of the removal band, in pixels
 
 RESIDUE_IN_BAND    = 0.80  # share of a fragment's pixels that must be in-band
@@ -315,22 +312,6 @@ def remove_from_detection(result: dict) -> StaffRemoval:
 # --------------------------------------------------------------------------- #
 #  Evaluation
 # --------------------------------------------------------------------------- #
-def align_ground_truth(gt_no_staff: np.ndarray, result: dict) -> np.ndarray:
-    """Puts a staff-free ground-truth page into the same frame as `result`.
-    - detect_staves levels the page before detecting; the ground truth must be
-      rotated by the same angle, the same way (nearest neighbour on the
-      binarised image), or every comparison is off by the rotation.
-    Args:
-        gt_no_staff: Ground-truth page without staff lines, any polarity.
-        result: The dict returned by `detect_staves`.
-    Returns:
-        Binary ground truth (ink = 255) aligned with `result["binary"]`.
-    """
-    gt_binary = binarize(gt_no_staff)
-    _, aligned = deskew_page(gt_no_staff, gt_binary, result.get("angle", 0.0))
-    return aligned
-
-
 def evaluate_removal(binary: np.ndarray, cleaned: np.ndarray,
                      gt_no_staff: np.ndarray) -> dict:
     """Pixel-level scores against a staff-free ground-truth image.
@@ -342,8 +323,8 @@ def evaluate_removal(binary: np.ndarray, cleaned: np.ndarray,
     Args:
         binary: Original binary page, ink = 255.
         cleaned: Output of removal, ink = 255.
-        gt_no_staff: Ground-truth page without staff lines, in the SAME frame
-            as `binary` -- pass it through `align_ground_truth` first.
+        gt_no_staff: Ground-truth page without staff lines (any polarity;
+            it is binarised the same way).
     Returns:
         Dict with `precision`, `recall`, `f1` for staff-pixel detection, plus
         `symbol_loss` (share of symbol ink wrongly erased) and `staff_left`
@@ -420,7 +401,7 @@ def plot_cleaned(removal: StaffRemoval, before: np.ndarray | None = None,
 
     height_px, width_px = after.shape[:2]
     panel_h = width_in * height_px / width_px
-    fig, axes = plt.subplots(nrows=2, sharex=True, sharey=True,
+    fig, axes = plt.subplots(ncols=2, sharex=True, sharey=True,
                              figsize=(width_in, 2 * panel_h + 0.6))
 
     for ax, image, title in ((axes[0], 255 - before, "Before"),
@@ -473,7 +454,7 @@ if __name__ == "__main__":
 
     path = args.image
     if path is None:
-        random.seed(35)
+        random.seed(40)
         files = glob("./Separate_Set/*.png")
         if not files:
             raise SystemExit("No images found in ./Separate_Set/")
@@ -486,8 +467,7 @@ if __name__ == "__main__":
 
     scores = None
     if args.gt:
-        gt = align_ground_truth(cv2.imread(args.gt, 0), result)
-        scores = evaluate_removal(result["binary"], removal.cleaned, gt)
+        scores = evaluate_removal(result["binary"], removal.cleaned, cv2.imread(args.gt, 0))
 
     summarise(result, removal, scores)
     plot_cleaned(removal, before=result["binary"])

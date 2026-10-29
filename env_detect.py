@@ -1,9 +1,58 @@
 # =============================================================================
 #  env_detect.py  --  musical environment read from the page
-#  Version: 1.0.0
+#  Version: 1.0.3
 #
 #  Changelog
 #  ---------
+#  1.0.3  (2026-10-29)
+#    - C clef (alto, tenor): its bars, cut from the body by staff removal,
+#      are joined back onto a body that stays inside the staff. A thick bar
+#      alone was taken for a barline and the body alone read as a bass clef,
+#      so every pitch of an alto-clef part (viola) came out wrong.
+#  1.0.2  (2026-10-28)
+#    - FRAGMENT_GAP_U 0.15 -> 0.35 for loop-sized pieces (at most 1.4U x
+#      0.8U and at least 0.08U^2; others keep 0.15): the thin left side of a MuseScore
+#      (Leland) flat's loop lies on a staff line and is removed with it, so
+#      the loop starts further from the stem; key signatures of flats were
+#      read as sharps on such pages.
+#    - Systems: a straight vertical stroke from the top of one staff to the
+#      bottom of the next joins them too, even when it touches a clef or a bracket (its
+#      connected component is then too wide for the old rule). A violin
+#      staff and the piano below it were split into separate systems.
+#    - Systems with fewer staves than the fullest one (empty staves hidden)
+#      are matched to it by clef and staff size (_align_slots), so a staff
+#      keeps its part; before, the staff position alone decided.
+#    - A clef must be at least CLEF_MIN_W_U (0.6U) wide: a piece of the
+#      system's opening line (thicker on enlarged pages) was read as a C clef.
+#    - Clef, key and time signature of each staff are read at that staff's
+#      own staff space (small staves, staff_detect 3.3.0).
+#    - Only strokes up to ACC_STROKE_MAX_U (2.9U) are re-joined with
+#      fragments (accidentals); pieces of a system's opening double line
+#      (about 3U after staff removal) were joined into a clef-like glyph.
+#    - Joined time-signature digits: two loops (4 over 4, 6 over 8) or a
+#      dense glyph (about 40 % ink) are accepted too, and blurred digits up
+#      to 80 % ink (enlarged small pages).
+#  1.0.1  (2026-10-25)
+#    - FIX: key signatures stopped after one or two flats on printed scores.
+#      Staff removal cuts the thin join between a flat's stem and its loop
+#      where it crosses a line, and the 2.5U stem was then treated as a
+#      barline ("thin vertical") and never merged back. A stroke now counts
+#      as barline-like only above BARLINE_MIN_U (3.2U; a barline spans 4U),
+#      and a piece just right of a short stroke, inside its height, is
+#      joined to it first (re-forms flats and naturals).
+#    - A sharp (or natural) whose slanted bars lay on staff lines and were
+#      removed with them leaves two short strokes of equal height; they are
+#      joined again (key signatures stopped at such a sharp).
+#    - A bass clef with only one dot found (the other lost to noise) is the
+#      usual F clef on the fourth line; the single dot's space was rounded to
+#      the third line before.
+#    - Time signatures whose digits touch (12 over 8) form one staff-high
+#      glyph; such a glyph right after the key signature is now located.
+#      It must be wide in both its upper and lower third, so the first
+#      note of a staff (head plus a staff-high stem) is not taken for one,
+#      and either no vertical stroke is longer than 3.3U (a stem is) or the
+#      glyph has an enclosed loop (6, 8, 4, 9; a beamed group of filled
+#      notes has none) -- rejects beamed note groups, keeps blurred digits.
 #  1.0.0  (2026-10-23)
 #    - Systems: which staves are played together, from narrow ink strokes
 #      (barlines, braces, brackets, system lines) that reach into both of two
@@ -33,6 +82,7 @@ from glob import glob
 
 import cv2
 import numpy as np
+from itertools import combinations
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
@@ -54,6 +104,14 @@ SCAN_START_U   = -1.5   # look for glyphs from this far left of the staff start
 SCAN_END_U     = 16.0   # ...to this far right
 MERGE_GAP_U    = 0.30   # side-by-side pieces closer than this form one glyph
 MERGE_VOVERLAP = 0.60   # ...if they overlap vertically by this share
+TWIN_GAP_U = 0.6       # two short strokes this close, of one height: a sharp's stems
+FRAGMENT_GAP_U = 0.35   # a flat-loop-sized piece this close right of a short stroke ...
+C_BAR_GAP_U = 0.35         # bars of a C clef this close left of its body belong to it
+CLEF_MIN_W_U = 0.6         # clefs are wide; a narrower piece is a bracket or system line
+ACC_STROKE_MAX_U = 2.9     # strokes of accidentals are shorter than this (system brackets are longer)
+FRAGMENT_GAP_NEAR_U = 0.15  # (a larger piece: this close; 1.0.1 used 0.15 for all)
+FRAGMENT_INSIDE = 0.85  # ...and this much inside its height is part of it
+BARLINE_MIN_U  = 3.2    # thin strokes taller than this are barline-like
 MIN_GLYPH_AREA = 0.03   # in U^2
 
 TREBLE_MIN_HEIGHT_U = 4.8
@@ -318,6 +376,35 @@ class Glyph:
         return (self.top_step + self.bottom_step) / 2.0
 
 
+def _two_wide_halves(g: Glyph) -> bool:
+    """Two stacked digits are wide in both the upper and the lower third;
+    a notehead with its stem is wide at one end only."""
+    third = max(g.h // 3, 1)
+    def span(rows: np.ndarray) -> int:
+        cols = np.flatnonzero(rows.any(axis=0))
+        return int(cols[-1] - cols[0] + 1) if cols.size else 0
+    return span(g.mask[:third]) >= 0.45 * g.w and span(g.mask[-third:]) >= 0.45 * g.w
+
+
+def _holes(mask: np.ndarray, min_area: float) -> int:
+    """Enclosed background regions (the loops of 6, 8, 9, 0, 4)."""
+    bg = np.pad(~mask, 1, constant_values=True).astype(np.uint8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(bg, connectivity=4)
+    outside = lab[0, 0]
+    return sum(1 for k in range(1, n) if k != outside and st[k, cv2.CC_STAT_AREA] >= min_area)
+
+
+def _longest_vertical_run(mask: np.ndarray) -> int:
+    best = 0
+    for col in mask.T:
+        padded = np.concatenate(([0], col.astype(np.int8), [0]))
+        d = np.diff(padded)
+        starts, ends = np.flatnonzero(d == 1), np.flatnonzero(d == -1)
+        if starts.size:
+            best = max(best, int((ends - starts).max()))
+    return best
+
+
 def _merge(a: Glyph, b: Glyph) -> Glyph:
     x, y = min(a.x, b.x), min(a.y, b.y)
     r, btm = max(a.right, b.right), max(a.y + a.h, b.y + b.h)
@@ -356,6 +443,19 @@ def _cut_brackets(cleaned: np.ndarray, u: float) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 #  Systems
 # --------------------------------------------------------------------------- #
+def _vertical_through(ink: np.ndarray, y0: float, y1: float, u: float) -> int:
+    """Number of narrow vertical strokes covering every row from y0 to y1."""
+    y0, y1 = int(max(0, np.floor(y0))), int(min(ink.shape[0], np.ceil(y1)))
+    if y1 - y0 < 2:
+        return 0
+    full = ink[y0:y1].all(axis=0)
+    cols = np.flatnonzero(full)
+    if cols.size == 0:
+        return 0
+    runs = np.split(cols, np.flatnonzero(np.diff(cols) > 1) + 1)
+    return sum(1 for r in runs if r.size <= CONNECT_MAX_WIDTH_U * u / 4)
+
+
 def group_systems(result: dict, removal: StaffRemoval) -> tuple[list[list[int]], list[int]]:
     """Groups staves into systems.
 
@@ -382,8 +482,14 @@ def group_systems(result: dict, removal: StaffRemoval) -> tuple[list[list[int]],
     for i in range(len(staves) - 1):
         reach = CONNECT_PENETRATION_U * u
         joined = narrow & (tops <= staves[i].bottom - reach) & (bottoms >= staves[i + 1].top + reach)
-        counts.append(int(joined.sum()))
-        if joined.any():
+        # or a straight vertical stroke through the whole gap (the system's
+        # opening line, when a clef or a bracket touches it and makes its
+        # component wide)
+        # (it runs from the top of the upper staff to the bottom of the lower
+        # one, which a chain of stems and ledger notes does not)
+        through = _vertical_through(removal.cleaned > 0, staves[i].top + 0.3 * u, staves[i + 1].bottom - 0.3 * u, u)
+        counts.append(int(joined.sum()) + through)
+        if joined.any() or through:
             systems[-1].append(i + 1)
         else:
             systems.append([i + 1])
@@ -407,6 +513,39 @@ def staff_start_glyphs(image: np.ndarray, labels: np.ndarray, stats: np.ndarray,
                             labels[y:y + h, x:x + w] == c))
     pieces.sort(key=lambda g: g.x)
 
+    # 1. re-join fragments cut off a short stroke by staff removal (flat loops)
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(pieces)):
+            a = pieces[i]
+            if not (a.w < 0.45 * u and a.h <= ACC_STROKE_MAX_U * u):   # accidental strokes, not bracket lines
+                continue
+            for j in range(len(pieces)):
+                b = pieces[j]
+                if j == i or b.x < a.x:
+                    continue
+                gap = b.x - a.right
+                inside = min(a.y + a.h, b.y + b.h) - max(a.y, b.y)
+                # the two strokes of a sharp or natural whose cross bars were
+                # removed with the staff lines
+                twin = (b.w < 0.45 * u and abs(b.h - a.h) <= 0.4 * u and gap <= TWIN_GAP_U * u
+                        and inside >= 0.8 * min(a.h, b.h))
+                if b.h >= a.h and not twin:
+                    continue
+                # a small loop may start further away (its thin join lay on a line)
+                reach = FRAGMENT_GAP_U if (b.h <= 1.4 * u and b.w <= 0.8 * u and b.area >= 0.08 * u * u) \
+                    else FRAGMENT_GAP_NEAR_U         # (not specks of noise)
+                if twin or (gap <= reach * u and inside >= FRAGMENT_INSIDE * b.h):
+                    pieces[i] = _merge(a, b)
+                    del pieces[j]
+                    merged = True
+                    break
+            if merged:
+                break
+    pieces.sort(key=lambda g: g.x)
+
+    # 2. side-by-side halves of one glyph
     merged = True
     while merged:
         merged = False
@@ -437,7 +576,7 @@ def staff_start_glyphs(image: np.ndarray, labels: np.ndarray, stats: np.ndarray,
 
 def _is_thin_vertical(g: Glyph, u: float) -> bool:
     """Barlines, double bars and bracket remnants at the start of a staff."""
-    return g.w < 0.45 * u and g.h > 2.5 * u
+    return g.w < 0.45 * u and g.h > BARLINE_MIN_U * u
 
 
 def _is_dot(g: Glyph, u: float) -> bool:
@@ -464,7 +603,7 @@ def detect_clef(glyphs: list[Glyph], paths: np.ndarray, u: float) -> tuple[Found
         ends, so the key signature search starts after it.
     """
     candidates = [g for g in glyphs
-                  if not _is_thin_vertical(g, u) and not _is_dot(g, u)
+                  if not _is_thin_vertical(g, u) and not _is_dot(g, u) and g.w >= CLEF_MIN_W_U * u
                   and CLEF_MIN_HEIGHT_U * u <= g.h <= CLEF_MAX_HEIGHT_U * u
                   and g.w >= CLEF_MIN_ASPECT * g.h
                   and -6 <= g.centre_step <= 14]
@@ -473,6 +612,23 @@ def detect_clef(glyphs: list[Glyph], paths: np.ndarray, u: float) -> tuple[Found
             (glyphs[0].x if glyphs else 0)
 
     g = candidates[0]
+    # a C clef's two bars are separate strokes once staff removal cuts the
+    # thin join at the middle line, and a thick bar alone looks like a
+    # barline: join bars standing just left of the body back onto it
+    # (only for a body that stays inside the staff, as a C clef does; a G or
+    # F clef next to the system's opening line is left alone)
+    inside = g.top_step >= -1.5 and g.bottom_step <= 9.5
+    for b in sorted([b for b in glyphs if b.right <= g.x + 1 and b.x < g.x], key=lambda b: -b.right):
+        if not inside:
+            break
+        overlap = min(b.y + b.h, g.y + g.h) - max(b.y, g.y)
+        if g.x - b.right <= C_BAR_GAP_U * u and b.w <= 0.8 * u and b.h >= 0.7 * g.h and overlap >= 0.7 * g.h \
+                and b.top_step >= -1.5 and b.bottom_step <= 9.5:
+            top, bottom = min(g.top_step, b.top_step), max(g.bottom_step, b.bottom_step)
+            g = _merge(b, g)
+            g.top_step, g.bottom_step = top, bottom
+        elif g.x - b.right > C_BAR_GAP_U * u:
+            break
     height_u = g.h / u
     run, run_x = longest_vertical_run(g.mask)
     vrun = run / g.h
@@ -492,6 +648,10 @@ def detect_clef(glyphs: list[Glyph], paths: np.ndarray, u: float) -> tuple[Found
     if f_dots:
         dot_step = float(np.mean([d.centre_step for d in f_dots]))
         line_step = int(np.clip(2 * round(dot_step / 2), 0, 8))
+        if len(f_dots) == 1:
+            # one dot (the other lost to noise or merged): it sits in a space
+            # next to the F line, so it cannot tell which; take the usual one
+            line_step = 2
         conf = "high" if len(f_dots) >= 2 else "medium"
         return Found(Clef("F", 5 - line_step // 2), conf,
                      f"{len(f_dots)} dot(s) around step {dot_step:.1f} ({shape})", [g.box]), end_x
@@ -705,6 +865,38 @@ def _harmonise_keys(staves: list, warnings: list):
                               f"this staff read {s.key.value}: {s.key.reason}", s.key.boxes)
 
 
+def _align_slots(out: list, systems: list, staves: list, page_u: float, warnings: list) -> None:
+    """Systems with fewer staves (empty staves hidden, as MuseScore does by
+    default) are matched to the fullest system by clef and staff size, in
+    order, so each staff keeps its part. Without this, the piano right hand
+    of a violin + piano score became "the violin" on such systems."""
+    by_index = {s.index: s for s in out}
+
+    def sig(si: int) -> tuple:
+        e = by_index.get(si)
+        clef = e.clef.value.sign if e is not None and e.clef.value is not None else None
+        sp = float(getattr(staves[si], "spacing", page_u) or page_u)
+        return clef, sp < 0.9 * page_u
+
+    ref = max(systems, key=len)
+    ref_sig = [sig(si) for si in ref]
+    for members in systems:
+        if len(members) >= len(ref):
+            continue
+        own = [sig(si) for si in members]
+        best = None
+        for slots in combinations(range(len(ref)), len(members)):
+            score = sum((a[0] == b[0] and a[0] is not None) * 2 + (a[1] == b[1]) * 2
+                        for a, b in zip(own, (ref_sig[k] for k in slots)))
+            score += 0.1 * sum(slots)                # ties: the lower staves (hidden solo parts are on top)
+            if best is None or score > best[0]:
+                best = (score, slots)
+        for si, slot in zip(members, best[1]):
+            if si in by_index:
+                by_index[si].slot = slot
+        warnings.append(f"system with staves {members}: matched to parts {list(best[1])} by clef and size")
+
+
 def detect_environment(result: dict, removal: StaffRemoval) -> PageEnvironment:
     """Reads systems, clefs, key signatures and time-signature positions.
     Args:
@@ -733,8 +925,12 @@ def detect_environment(result: dict, removal: StaffRemoval) -> PageEnvironment:
     owner[0] = -1
 
     out = []
+    page_u = u
     for system_index, members in enumerate(systems):
         for slot, si in enumerate(members):
+            # each staff at its own size (a small solo staff above a piano part)
+            sp = float(getattr(staves[si], "spacing", 0.0) or 0.0)
+            u = sp if 0.5 * page_u <= sp <= 1.5 * page_u else page_u
             paths = removal.line_paths[si]
             x0 = int(removal.line_extents[si][:, 0].min())
             glyphs = staff_start_glyphs(image, labels, stats, owner, si, paths, x0, u)
@@ -749,6 +945,26 @@ def detect_environment(result: dict, removal: StaffRemoval) -> PageEnvironment:
 
             time = Found(None, "none", "no time signature here")
             present = False
+            if not pairs:
+                # digits that touch (e.g. 12 over 8) form one staff-high glyph
+                for g in later:
+                    if g.x - after_key > TIME_MAX_GAP_U * u:
+                        break
+                    if id(g) in {id(x) for x in key.boxes} or _is_thin_vertical(g, u):
+                        continue
+                    fill = g.area / max(g.w * g.h, 1)
+                    # bold digits fill 25-65 % of their box; a note with a stem is sparser,
+                    # a thick (repeat) barline is denser and narrower
+                    if g.top_step <= 0.6 and g.bottom_step >= 7.4 and 3.6 * u <= g.h <= 4.8 * u \
+                            and 1.2 * u <= g.w <= 3.6 * u and 0.25 <= fill <= 0.8 \
+                            and g.x >= after_key - 0.2 * u \
+                            and (_two_wide_halves(g) or _holes(g.mask, 0.05 * u * u) >= 2) \
+                            and (_longest_vertical_run(g.mask) <= 3.3 * u or _holes(g.mask, 0.05 * u * u) >= 1
+                                 or fill >= 0.4):
+                        present = True
+                        time = Found(None, "none", "time signature located (one joined glyph); digits not read",
+                                     [g.box])
+                        break
             for upper, lower in pairs:
                 if upper.x - after_key <= TIME_MAX_GAP_U * u:
                     present = True
@@ -762,6 +978,8 @@ def detect_environment(result: dict, removal: StaffRemoval) -> PageEnvironment:
             out.append(StaffEnvironment(si, system_index, slot, clef, key, time, present))
 
     out.sort(key=lambda s: s.index)
+    if not consistent:
+        _align_slots(out, systems, staves, page_u, warnings)
     _harmonise_keys(out, warnings)
 
     for s in out:

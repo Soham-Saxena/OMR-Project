@@ -1,9 +1,17 @@
 # =============================================================================
 #  omr_gui.py  --  desktop interface (Tkinter) for the OMR pipeline
-#  Version: 1.0.0
+#  Version: 1.1.0
 #
 #  Changelog
 #  ---------
+#  1.1.0  (2026-10-28)
+#    - Opens PDFs (all pages; see omr.load_pages) and converts every page into
+#      one MIDI file; the viewer shows the first page. The summary lists the
+#      page count, screenshot cleaning, enlargement of small pages and parts
+#      matched on systems with hidden staves.
+#  1.0.1  (2026-10-28)
+#    - The summary shows the note from omr 1.1.0 when the time signature
+#      was replaced because the measures did not fit it.
 #  1.0.0  (2026-10-25)
 #    - Open a page image, set tempo / beat unit / time signature / instrument
 #      / deskew, convert, view the page or the recognition overlay (zoom),
@@ -32,7 +40,7 @@ import numpy as np
 from env_config import BEAT_UNITS, GENERAL_MIDI, TRANSPOSITION, parse_bpm, parse_time
 from env_detect import Clef, key_name
 from interpret import interpret
-from omr import PipelineResult, overlay, run_pipeline, write_midi
+from omr import PipelineResult, load_pages, overlay, run_pages, run_pipeline, write_midi, write_midi_pages
 
 AUTO_INSTRUMENT = "(as detected)"
 
@@ -43,28 +51,31 @@ class OmrController:
     def __init__(self):
         self.path: str | None = None
         self.image: np.ndarray | None = None
+        self.pages: list = []
         self.result: PipelineResult | None = None
+        self.results: list = []
         self.overlay_rgb: np.ndarray | None = None
 
     def load(self, path: str) -> np.ndarray:
-        image = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-        if image is None:
-            raise ValueError(f"Cannot read {path}")
-        self.path, self.image, self.result, self.overlay_rgb = path, image, None, None
-        return image
+        pages = load_pages(path)
+        self.path, self.pages, self.image = path, pages, pages[0]
+        self.result, self.results, self.overlay_rgb = None, [], None
+        return self.image
 
     def convert(self, bpm: str, beat_unit: str, time_signature: str, instrument: str,
                 deskew: bool) -> PipelineResult:
         if self.image is None:
             raise ValueError("Open an image first.")
-        res = run_pipeline(self.image, straighten=deskew, time_signature=parse_time(time_signature),
-                           bpm=parse_bpm(bpm), beat_unit=beat_unit)
+        self.results = run_pages(self.pages or [self.image], straighten=deskew,
+                                 time_signature=parse_time(time_signature), bpm=parse_bpm(bpm), beat_unit=beat_unit)
+        res = self.results[0]
         if instrument and instrument != AUTO_INSTRUMENT:
             program = GENERAL_MIDI.index(instrument)
-            for part in res.env.parts:
-                part.instrument, part.program = instrument, program
-                part.transpose = TRANSPOSITION.get(instrument, 0)
-            res.music = interpret(res.recognition, res.removal, res.env)   # transposition may change pitches
+            for r in self.results:
+                for part in r.env.parts:
+                    part.instrument, part.program = instrument, program
+                    part.transpose = TRANSPOSITION.get(instrument, 0)
+                r.music = interpret(r.recognition, r.removal, r.env)   # transposition may change pitches
         self.result = res
         self.overlay_rgb = overlay(res)
         return res
@@ -74,12 +85,25 @@ class OmrController:
         if res is None:
             return ""
         lines = []
+        if len(self.results) > 1:
+            lines.append(f"Pages: {len(self.results)} (all in one MIDI file; the viewer shows page 1); "
+                         f"notes on all pages: {sum(len(r.music.notes) for r in self.results)}")
+        if res.staff.get("page_box"):
+            lines.append("Screenshot: only the page area was read")
+        if res.staff.get("scale", 1.0) != 1.0:
+            lines.append(f"Small page: enlarged x{res.staff['scale']:.2f} before recognition"
+                         + (" (a PDF or 300 dpi export reads better)" if res.staff["scale"] > 1.6 else ""))
+        for w in res.page_env.warnings:
+            if "matched to parts" in w:
+                lines.append(w)
         if res.staff.get("skew_deg"):
             lines.append(f"Page levelled by {res.staff['skew_deg']:+.2f} degrees")
         lines.append(f"Staves: {len(res.staff['staves'])}  (staff space U = {res.staff['interline']:.1f} px)")
         lines.append(f"Systems: {[len(s) for s in res.page_env.systems]}")
         for s in res.env.staves:
             lines.append(f"  staff {s.index}: {Clef.parse(s.clef).name}, {key_name(s.key)}")
+        if getattr(res, "time_note", ""):
+            lines.append("Note: " + res.time_note)
         lines.append(f"Time signature: {res.env.time_signature[0]}/{res.env.time_signature[1]}, "
                      f"tempo {res.env.quarter_bpm:g} quarter notes per minute")
         for p in res.env.parts:
@@ -94,6 +118,8 @@ class OmrController:
         if self.result is None:
             raise ValueError("Convert a page first.")
         stem = path[:-4] if path.lower().endswith(".mid") else path
+        if len(self.results) > 1:
+            return write_midi_pages(self.results, stem)
         return write_midi(self.result, stem)
 
     def save_overlay(self, path: str):
@@ -176,7 +202,7 @@ def main():
 
     def open_image(path=None):
         path = path or filedialog.askopenfilename(
-            title="Open sheet music", filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"), ("All", "*.*")])
+            title="Open sheet music", filetypes=[("Images and PDF", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.pdf"), ("All", "*.*")])
         if not path:
             return
         try:

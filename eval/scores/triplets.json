@@ -1,0 +1,15 @@
+{
+  "title": "Triplet study",
+  "time": [4, 4],
+  "fifths": 0,
+  "staves": [{"clef": "G2", "name": "Piano", "gap": 0}, {"clef": "F4", "gap": 8}],
+  "groups": [[0, 1]],
+  "systems": [
+    {"measures": [
+      {"staves": [["C5:8tb1", "D5:8tb1", "E5:8tb1", "F5:q", "G5:8tb2", "F5:8tb2", "E5:8tb2", "D5:q"], ["C3:h", "G2:h"]]},
+      {"staves": [["E5:8b3", "F5:8b3", "G5:8tb4", "A5:8tb4", "B5:8tb4", "C6:h"], ["C3:w"]]},
+      {"staves": [["G4:8tb5", "A4:8tb5", "B4:8tb5", "C5:8tb6", "D5:8tb6", "E5:8tb6", "F5:h"], ["F2:h", "G2:h"]]},
+      {"staves": [["E5:q", "C5:q", "C5:h"], ["C3:w"]]}
+    ]}
+  ]
+}

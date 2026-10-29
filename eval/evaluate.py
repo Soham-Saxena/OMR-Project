@@ -1,9 +1,23 @@
 # =============================================================================
 #  evaluate.py  --  scores the pipeline on engraved pages with ground truth
-#  Version: 1.0.0
+#  Version: 1.2.0
 #
 #  Changelog
 #  ---------
+#  1.2.0  (2026-10-28)
+#    - Pages that omr.py enlarges (small staff space) are scored in the
+#      original page coordinates.
+#  1.1.0  (2026-10-25)
+#    - Tied notes: the ground-truth MIDI note of a tie starts at the first
+#      head and lasts the whole tied length; later heads of the tie are
+#      scored as noteheads (detection, type, pitch) but not as note onsets
+#      or durations. Pitch of a later tied head is checked through the label
+#      the interpreter gives it.
+#    - Pages with clef changes: the ground-truth pitch already uses the clef
+#      in force; clef accuracy stays the opening clef per staff, and a
+#      clef-change score (found / true, within 1.5U) is added.
+#    - Tempo-mark noteheads are not in the ground truth, so a detected one
+#      counts as a false head.
 #  1.0.0  (2026-10-25)
 #    - Per page: staff count and line position error, staff-removal pixel
 #      precision/recall/F1 (staff_remove.evaluate_removal against the
@@ -124,6 +138,10 @@ def evaluate_page(png: str, out_dir: str, confirmed: bool = False, straighten: b
         res = run_pipeline(gray, env=confirmed_environment(gray, gt), straighten=straighten)
     else:
         res = run_pipeline(gray, time_signature=tuple(gt["time_signature"]), straighten=straighten)
+    sc = res.staff.get("scale", 1.0)          # omr enlarges small pages
+    if sc != 1.0:
+        nostaff = cv2.resize(nostaff, (res.staff["binary"].shape[1], res.staff["binary"].shape[0]),
+                             interpolation=cv2.INTER_CUBIC)
     stem = os.path.join(out_dir, os.path.basename(png).replace(".png", ""))
     midi_path = write_midi(res, stem)
 
@@ -136,10 +154,11 @@ def evaluate_page(png: str, out_dir: str, confirmed: bool = False, straighten: b
     staff_map = {}
     errs = []
     for di, s in enumerate(det_staves):
-        gi = int(np.argmin([abs(s.top - t) for t in gt_tops]))
-        if abs(s.top - gt_tops[gi]) < 2 * u:
+        gi = int(np.argmin([abs(s.top / sc - t) for t in gt_tops]))
+        if abs(s.top / sc - gt_tops[gi]) < 2 * u:
             staff_map[di] = gi
-            errs += list(np.abs(np.asarray(s.lines) - np.asarray(gt["staves"][gi]["lines"])))
+            errs += list(np.abs(np.asarray(s.lines) / sc - np.asarray(gt["staves"][gi]["lines"])))
+    staff_map_inv = {g: d for d, g in staff_map.items()}
     r["staves"] = {"gt": len(gt_tops), "det": len(det_staves), "matched": len(staff_map),
                    "line_err_px": float(np.mean(errs)) if errs else None}
 
@@ -162,7 +181,7 @@ def evaluate_page(png: str, out_dir: str, confirmed: bool = False, straighten: b
     det_heads = [(h, c) for ss in res.recognition.staves for c in ss.chords for h in c.heads]
     note_by_head = {id(nt.head): nt for nt in res.music.notes}
     pairs = greedy_match([(h["cx"], h["cy"]) for h in gt_heads],
-                         [(h.match.cx, h.match.cy) for h, _ in det_heads], HEAD_TOL_U * u)
+                         [(h.match.cx / sc, h.match.cy / sc) for h, _ in det_heads], HEAD_TOL_U * u)
     r["heads"] = prf(len(pairs), len(gt_heads), len(det_heads))
     kind_ok = pitch_ok = dur_ok = acc_tot = acc_ok = 0
     for gi, dj in pairs:
@@ -170,8 +189,15 @@ def evaluate_page(png: str, out_dir: str, confirmed: bool = False, straighten: b
         hollow_gt = g["kind"] in ("hollow", "whole")
         kind_ok += int(hollow_gt == c.hollow)
         nt = note_by_head.get(id(h))
-        pitch_ok += int(nt is not None and nt.midi == g["pitch"])
-        dur_ok += int(nt is not None and nt.ticks == g["ticks"])
+        if g.get("tied_from_prev"):
+            # merged into the first note of its tie: pitch from that note
+            nt = next((n for n in res.music.notes if n.part == g["part"] and n.onset < g["onset"]
+                       and n.onset + n.ticks >= g["onset"] + g["ticks"] and n.midi == g["pitch"]), None)
+            pitch_ok += int(nt is not None)
+            dur_ok += int(nt is not None)
+        else:
+            pitch_ok += int(nt is not None and nt.midi == g["pitch"])
+            dur_ok += int(nt is not None and nt.ticks == g.get("sound_ticks", g["ticks"]))
         if g.get("accidental"):
             acc_tot += 1
             acc_ok += int(h.accidental == g["accidental"])
@@ -186,9 +212,21 @@ def evaluate_page(png: str, out_dir: str, confirmed: bool = False, straighten: b
     gt_rests = gt["rests"]
     det_rests = [rr for ss in res.recognition.staves for rr in ss.rests]
     rp = greedy_match([(x["x"] + x["w"] / 2, x["y"] + x["h"] / 2) for x in gt_rests],
-                      [(x.match.cx, x.match.cy) for x in det_rests], REST_TOL_U * u)
+                      [(x.match.cx / sc, x.match.cy / sc) for x in det_rests], REST_TOL_U * u)
     r["rests"] = prf(len(rp), len(gt_rests), len(det_rests))
     r["rest_kind_acc"] = (sum(gt_rests[i]["kind"] == det_rests[j].kind for i, j in rp) / len(rp)) if rp else None
+
+    # clef changes inside staves
+    gt_cc = [(staff_map_inv.get(s["index"]), c) for s in gt["staves"] for c in s.get("clef_changes", [])]
+    det_cc = [(ss.index, x, code, octv) for ss in res.recognition.staves for x, code, octv in ss.clef_changes]
+    used, cc_ok = set(), 0
+    for di, c in gt_cc:
+        for j, (si, x, code, octv) in enumerate(det_cc):
+            if j not in used and si == di and abs(x / sc - c["cx"]) <= 1.5 * u:
+                used.add(j)
+                cc_ok += int(code == c["clef"] and octv == c["octave"])
+                break
+    r["clef_changes"] = {"gt": len(gt_cc), "det": len(det_cc), "found": len(used), "correct": cc_ok}
 
     # measures
     good, total = res.music.measures_ok
@@ -197,7 +235,8 @@ def evaluate_page(png: str, out_dir: str, confirmed: bool = False, straighten: b
 
     # end to end: MIDI file vs ground truth
     det = midi_notes(midi_path)
-    gt_notes = [(h["part"], h["onset"], h["pitch"], h["ticks"]) for h in gt_heads]
+    sounding = [h for h in gt_heads if not h.get("tied_from_prev")]
+    gt_notes = [(h["part"], h["onset"], h["pitch"], h.get("sound_ticks", h["ticks"])) for h in sounding]
     det_set = {}
     for t, o, p, d in det:
         det_set.setdefault((t, o, p), []).append(d)
@@ -215,7 +254,7 @@ def evaluate_page(png: str, out_dir: str, confirmed: bool = False, straighten: b
     # A duration error then costs only its own measure, not the rest of the part.
     mt = int(gt["time_signature"][0] * 4 / gt["time_signature"][1] * 480)
     gt_m = {}
-    for h in gt_heads:
+    for h in sounding:
         key_ = (h["part"], h["onset"] // mt, h["onset"] % mt, h["pitch"])
         gt_m[key_] = gt_m.get(key_, 0) + 1
     tp_m = 0
@@ -224,7 +263,7 @@ def evaluate_page(png: str, out_dir: str, confirmed: bool = False, straighten: b
         if gt_m.get(key_, 0) > 0:
             gt_m[key_] -= 1
             tp_m += 1
-    r["measure_onset_pitch"] = prf(tp_m, len(gt_heads), len(res.music.notes))
+    r["measure_onset_pitch"] = prf(tp_m, len(sounding), len(res.music.notes))
     r["e2e_onset_pitch"] = prf(tp_on, len(gt_notes), len(det))
     r["e2e_with_duration"] = prf(tp_full, len(gt_notes), len(det))
     seq_acc = []

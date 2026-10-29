@@ -84,6 +84,30 @@
       "cls": "rest_sixteenth",
       "file": "rest_sixteenth.png",
       "anchor_y": 68.0
+    },
+    {
+      "name": "clef_g",
+      "cls": "clef_g",
+      "file": "clef_g.png",
+      "anchor_y": 152.0
+    },
+    {
+      "name": "clef_g_change",
+      "cls": "clef_g",
+      "file": "clef_g_change.png",
+      "anchor_y": 124.0
+    },
+    {
+      "name": "clef_f",
+      "cls": "clef_f",
+      "file": "clef_f.png",
+      "anchor_y": 78.0
+    },
+    {
+      "name": "clef_f_change",
+      "cls": "clef_f",
+      "file": "clef_f_change.png",
+      "anchor_y": 65.0
     }
   ]
 }

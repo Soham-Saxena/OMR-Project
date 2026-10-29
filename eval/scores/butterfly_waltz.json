@@ -1,0 +1,37 @@
+{
+  "title": "Butterfly Waltz",
+  "composer": "Brian Crain",
+  "time": [3, 4],
+  "fifths": -1,
+  "tempo": 136,
+  "staves": [
+    {"clef": "G2", "size": 0.75, "name": "Violin", "gap": 0},
+    {"clef": "G2", "name": "Piano", "gap": 14},
+    {"clef": "G2", "gap": 12}
+  ],
+  "groups": [[0], [1, 2]],
+  "system_gap": 16,
+  "systems": [
+    {"measures": [
+      {"pickup": true, "dyn": [[0, "mp"]], "staves": [["A5:8b1", "C6:8b1"], ["r:q"], ["r:q"]]},
+      {"dyn": [[1, "mp"]], "staves": [["C6:h", "A5:8b2", "G5:8b2"], ["r:m"], ["F3:q", "C4:q", "F4:q"]]},
+      {"staves": [["F5:h", "C6:q"], ["r:m"], ["F3:q", "C4:q", "A4:q"]]},
+      {"staves": [["C6:q.", "D6:8", "C6:8b3", "Bb5:8b3"], ["r:m"], ["Bb3:q", "F4:q", "Bb4:q"]]},
+      {"staves": [["A5:h", "A5:8b4", "C6:8b4"], ["r:m"], ["F3:q", "C4:q", "A4:q"]]}
+    ]},
+    {"measures": [
+      {"staves": [["C6:h", "A5:8b5", "G5:8b5"], ["r:m"], ["F3:q", "C4:q", "F4:q"]]},
+      {"staves": [["F5:h", "C6:q"], ["r:m"], ["Bb3:q", "D4:q", "F4:q"]]},
+      {"staves": [["F5:h."], ["r:m"], ["F3:q", "A3:q", "C4:q"]]},
+      {"staves": [["F5:h", "A5:8b6", "C6:8b6"], ["r:m"], ["G3:q", "D4:q", "Bb4:q"]]},
+      {"staves": [["C6:h", "A5:8b7", "G5:8b7"], ["r:m"], ["C3:q", "C4:q", "E4:q"]]}
+    ]},
+    {"measures": [
+      {"staves": [["F5:h", "D6:q"], ["r:m"], ["F3:q", "C4:q", "F4:q"]]},
+      {"staves": [["D6:q.", "F6:8", "E6:8b8", "D6:8b8"], ["r:m"], ["Bb3:q", "F4:q", "Bb4:q"]]},
+      {"8va": [0], "staves": [["C6:h", "A4:8b9", "Bb4:8b9"], ["r:m"], ["F3:q", "C4:q", "A4:q"]]},
+      {"8va": [0], "staves": [["C5:q.", "F5:8", "E5:8b10", "F5:8b10"], ["r:m"], ["A3:q", "C4:q", "F4:q"]]},
+      {"8va": [0], "staves": [["C5:q.", "F5:8", "E5:8b11", "F5:8b11"], ["r:m"], ["Bb3:q", "D4:q", "F4:q"]]}
+    ]}
+  ]
+}

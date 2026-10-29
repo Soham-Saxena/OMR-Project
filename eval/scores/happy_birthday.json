@@ -1,0 +1,21 @@
+{
+  "title": "Happy Birthday",
+  "composer": "Patty Hill  Mildred J. Hill",
+  "time": [3, 4],
+  "fifths": 0,
+  "parts_label": ["Piano", "Pno."],
+  "systems": [
+    {"measures": [
+      {"chord": "C",  "staves": [["G4:8b1", "G4:8b1", "A4:q", "G4:q"], ["r:q", "C3+E3+G3:h"]]},
+      {"chord": "G7", "staves": [["C5:q", "B4:h"], ["r:q", "D3+F3+G3:h"]]},
+      {"staves": [["G4:8b2", "G4:8b2", "A4:q", "G4:q"], ["r:q", "B2+F3+G3:h"]]},
+      {"chord": "C",  "staves": [["D5:q", "C5:h"], ["r:q", "C3+E3+G3:h"]]},
+      {"staves": [["G4:8b3", "G4:8b3", "G5:q", "E5:q"], ["r:q", "E3+A3+C#4+E4:h"]]}
+    ]},
+    {"measures": [
+      {"staves": [["C5:q", "B4:q", "A4:q"], ["r:q", "F3+A3+C4+D4:h"]]},
+      {"staves": [["F5:8b4", "F5:8b4", "E5:q", "C5:q"], ["r:q", "E3+G3+C4:h"]]},
+      {"staves": [["D5:q", "C5:h"], ["D3+F3+G3:q", "C3+E3+G3:h"]]}
+    ]}
+  ]
+}

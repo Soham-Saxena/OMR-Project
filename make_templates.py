@@ -1,9 +1,13 @@
 # =============================================================================
 #  make_templates.py  --  builds the template bank used by symbol_match.py
-#  Version: 1.0.0
+#  Version: 1.1.0
 #
 #  Changelog
 #  ---------
+#  1.1.0  (2026-10-25)
+#    - Clef templates (FreeSerif G and F clefs) at full size and at the
+#      ~80 % size used for clef changes inside a staff, for symbol_match's
+#      mid-staff clef detection.
 #  1.0.0  (2026-10-25)
 #    - Notehead templates keep a 0.3U border at the sides but only 0.12U
 #      above and below, so touching chord notes still score well.
@@ -43,6 +47,10 @@ FONT_GLYPHS = {     # class, code point, height in U, anchor
     "rest_quarter":   ("rest_quarter",   0x1D13D, 2.9, "centre"),
     "rest_eighth":    ("rest_eighth",    0x1D13E, 1.9, "centre"),
     "rest_sixteenth": ("rest_sixteenth", 0x1D13F, 2.8, "centre"),
+    "clef_g":         ("clef_g",         0x1D11E, 7.0, "centre"),
+    "clef_g_change":  ("clef_g",         0x1D11E, 5.6, "centre"),
+    "clef_f":         ("clef_f",         0x1D122, 3.3, "centre"),
+    "clef_f_change":  ("clef_f",         0x1D122, 2.65, "centre"),
 }
 
 
